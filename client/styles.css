@@ -63,7 +63,8 @@ body:hover #ui { opacity: 1; }
   font-size: 12px;
 }
 
-#shuffle-toggle {
+#shuffle-toggle,
+#fps-toggle {
   padding: 6px 10px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -74,10 +75,28 @@ body:hover #ui { opacity: 1; }
   letter-spacing: 0.05em;
   cursor: pointer;
 }
-#shuffle-toggle[data-on="true"] {
+#shuffle-toggle[data-on="true"],
+#fps-toggle[data-on="true"] {
   background: rgba(120, 200, 255, 0.15);
   border-color: rgba(120, 200, 255, 0.55);
   color: rgb(190, 230, 255);
+}
+
+#fps[hidden] { display: none; }
+#fps {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  z-index: 10;
+  font-variant-numeric: tabular-nums;
 }
 
 #shuffle-interval {

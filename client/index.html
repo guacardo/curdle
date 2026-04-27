@@ -13,8 +13,11 @@
     <div id="status" data-state="connecting">connecting…</div>
     <button id="shuffle-toggle" data-on="false" title="Cycle shaders randomly">shuffle</button>
     <input id="shuffle-interval" type="number" min="3" max="300" value="15" title="Seconds per shader" />
+    <button id="fps-toggle" data-on="false" title="Show FPS">fps</button>
     <select id="shader-picker" title="Shader"></select>
   </div>
+
+  <div id="fps" hidden>-- fps</div>
 
   <div id="welcome" hidden>
     <h1>curdle</h1>

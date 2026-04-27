@@ -13,28 +13,37 @@
 //   screenY = HORIZON - (CAMERA_H - worldY) / worldZ * FOCAL * 0.5
 // At worldY=0 -> screenY < HORIZON. At worldY=CAMERA_H -> screenY = HORIZON
 // (vanishing). Vanishing point lives at exactly screen center.
-const float CAMERA_H = 1.0;     // camera height above the floor
-const float FOCAL    = 1.2;     // pinhole focal-ish; bigger = narrower FOV
-const float HORIZON  = 0.5;     // screen Y of the horizon
+// Camera dropped + FOV widened so the near rows are huge and bleed off the
+// bottom edge — synthwave-grid feel where the foreground crops past the
+// viewport and the whole grid rushes toward a low horizon.
+const float CAMERA_H = 0.62;    // camera height above the floor (was 1.0)
+const float FOCAL    = 0.85;    // smaller = wider FOV (was 1.2)
+const float HORIZON  = 0.52;    // horizon slightly above center
 
 // ---- Floor / cell grid ----
-// 32 freq columns × 32 time rows. Square footprint. Visible gaps so it reads
-// as discrete tiles, not a continuous mesh.
+// 32 freq columns × 32 time rows. Visible gaps so it reads as discrete tiles.
+// Row depth grows GEOMETRICALLY (not linearly): near rows are chunky squares,
+// far rows stretch deep into Z so the carpet reaches the horizon without
+// blowing up the per-fragment loop count. The cell *width* on screen still
+// shrinks naturally with 1/Z, so distant rows merge into the horizon haze
+// instead of ending in a hard cutoff line.
+//
+// Z layout: zFront(r) = Z_NEAR * pow(Z_GROWTH, r). With Z_NEAR=0.42 and
+// Z_GROWTH=1.165, r=31 lands at ~52 world units — projected dyHorizon at
+// that depth is ~0.005 of screen height, i.e. effectively the horizon line.
 const int   K_FREQ   = 32;
 const int   K_TIME   = 32;
-const float CELL_W   = 0.060;   // square tile size in world units (X)
-const float CELL_D   = 0.060;   // (Z) — keep equal for square footprint
-const float GAP      = 0.14;    // fraction of cell that is gap
-
-const float Z_NEAR   = 1.20;    // front-row Z (closest)
-// Z_FAR derived: Z_NEAR + K_TIME*CELL_D = 1.20 + 32*0.060 = 3.12
+const float CELL_W   = 0.075;   // tile width in world units (X) — fixed
+const float GAP      = 0.16;    // fraction of cell that is gap
+const float Z_NEAR   = 0.42;    // front-row Z front edge
+const float Z_GROWTH = 1.165;   // each row's Z extent multiplied by this
 
 // Hard ceiling on column height. Pushed ~5x so loud peaks reach ~60-70% of
 // screen height. Note: when barH > CAMERA_H, the column TOP rises ABOVE the
 // horizon line — the math still works (dyHorizon flips sign and we rely on
 // the side/front faces to cover the visible region). To keep things sane we
 // only allow the apex to climb modestly past the horizon.
-const float MAX_BAR_H = 2.5 * CAMERA_H;
+const float MAX_BAR_H = 2.2 * CAMERA_H;
 
 // ---- Log-frequency mapping (7 octaves) ----
 // Column k maps to freq01 = pow(2, mix(-7, 0, k/(K-1))). k=0 -> 1/128,
@@ -47,6 +56,13 @@ float colFreq(float k) {
   float f = pow(2.0, mix(-7.0, 0.0, t));
   return max(f, MIN_FREQ01);
 }
+
+// Geometric Z layout. Row r occupies [zFront(r), zFront(r+1)].
+// Closed-form: zFront(r) = Z_NEAR * pow(Z_GROWTH, r).
+float rowZFront(float r) { return Z_NEAR * pow(Z_GROWTH, r); }
+float rowZBack (float r) { return Z_NEAR * pow(Z_GROWTH, r + 1.0); }
+// Total Z extent of the grid (front of row 0 → back of last row).
+float gridZFar() { return Z_NEAR * pow(Z_GROWTH, float(K_TIME)); }
 
 // Color a column by frequency band using the IQ cosine palette.
 // Coefficients were chosen so the cosine sweep from t=0 → t=1 lands on:
@@ -167,21 +183,28 @@ void main() {
     float fZ    = (CAMERA_H * FOCAL * 0.5) / max(dyF, 1e-4);
     float fX    = (suv.x - 0.5) * 2.0 * fZ / FOCAL;
 
-    // Distance fade.
-    float zT = clamp((fZ - Z_NEAR) / (float(K_TIME) * CELL_D), 0.0, 1.0);
-    vec3 floorBase = mix(vec3(0.04, 0.02, 0.08), vec3(0.01, 0.01, 0.04), zT);
+    // Distance fade — log-Z so the geometric row layout fades evenly. At the
+    // back, the floor blends into the same haze color the columns dissolve
+    // into, killing any visible horizon-cutoff line.
+    float zFar = gridZFar();
+    float zT   = clamp(log2(max(fZ / Z_NEAR, 1.0)) /
+                       log2(max(zFar / Z_NEAR, 1.0001)), 0.0, 1.0);
+    vec3 floorNear = vec3(0.04, 0.02, 0.08);
+    vec3 floorFar  = vec3(0.10, 0.08, 0.22); // matches column haze
+    vec3 floorBase = mix(floorNear, floorFar, pow(zT, 0.65));
     col = floorBase;
 
     // Only draw gridlines INSIDE the dance-floor footprint.
     float gridXmax = float(K_FREQ) * CELL_W * 0.5;
-    bool insideFloor = (fZ >= Z_NEAR) && (fZ <= Z_NEAR + float(K_TIME) * CELL_D)
-                    && (abs(fX) <= gridXmax);
+    bool insideFloor = (fZ >= Z_NEAR) && (fZ <= zFar) && (abs(fX) <= gridXmax);
     if (insideFloor) {
-      // Tile boundaries every CELL_W in X, CELL_D in Z.
+      // X tile boundaries are uniform every CELL_W. Z boundaries follow the
+      // geometric layout: log2(z/Z_NEAR)/log2(Z_GROWTH) is integer at each row.
       float gx = abs(fract((fX + gridXmax) / CELL_W) - 0.5);
-      float gz = abs(fract((fZ - Z_NEAR) / CELL_D) - 0.5);
+      float zRow = log2(fZ / Z_NEAR) / log2(Z_GROWTH);
+      float gz = abs(fract(zRow) - 0.5);
       float lwx = fwidth((fX + gridXmax) / CELL_W) * 1.4;
-      float lwz = fwidth((fZ - Z_NEAR) / CELL_D) * 1.4;
+      float lwz = fwidth(zRow) * 1.4;
       float lx = 1.0 - smoothstep(0.0, lwx, gx);
       float lz = 1.0 - smoothstep(0.0, lwz, gz);
       float gridLine = max(lx, lz) * (1.0 - zT) * 0.30;
@@ -210,14 +233,18 @@ void main() {
   // Optional whole-floor flash on hard bass transients.
   float bassFlash = smoothstep(0.78, 0.95, u_bass);
 
+  float zFar = gridZFar();
+  float logZSpan = log2(max(zFar / Z_NEAR, 1.0001));
+
   for (int r = K_TIME - 1; r >= 0; r--) {
     float rf = float(r);
-    float zFront = Z_NEAR + rf * CELL_D;
-    float zBack  = Z_NEAR + (rf + 1.0) * CELL_D;
+    float zFront = rowZFront(rf);
+    float zBack  = rowZBack(rf);
+    float cellD  = zBack - zFront;          // this row's Z extent
 
     // Inset for gap so cells read as discrete tiles.
-    float zF = zFront + CELL_D * GAP * 0.5;
-    float zB = zBack  - CELL_D * GAP * 0.5;
+    float zF = zFront + cellD * GAP * 0.5;
+    float zB = zBack  - cellD * GAP * 0.5;
     float zMid = 0.5 * (zF + zB);
 
     // depthNorm: 0 at front (now), ~1 at back (oldest in history).
@@ -341,45 +368,106 @@ void main() {
     if (!isTop && !isFront && !isSide) continue;
 
     // ---------------- Shade ----------------
+    // Tron strategy:
+    //   - "edgeMask" is 1 along face boundaries (the wireframe), 0 inside.
+    //   - Interior fill paints with low alpha so overlapping bars blend their
+    //     colors back into the floor + sky already in `col`.
+    //   - Edges paint at full alpha — opaque outline.
     // Pick the right column's freq + height for the active face.
     float useFreq = isSide ? sideFreq01 : freq01;
     float useBar  = isSide ? sideBarH   : barH;
     float heightT = useBar / MAX_BAR_H;
-    vec3 cellCol = bandColor(useFreq, heightT);
+    vec3 baseCol = bandColor(useFreq, heightT);
     float zForFog = isSide ? (zF + sideZness * (zB - zF)) : zF;
-    float fog = clamp((zForFog - Z_NEAR) / (float(K_TIME) * CELL_D), 0.0, 1.0);
+    // Log-Z fog so the geometric row spacing fades evenly across screen.
+    float fog = clamp(log2(max(zForFog / Z_NEAR, 1.0)) / logZSpan, 0.0, 1.0);
+    // Curve so the back ~40% of rows dissolve hard into haze (no cutoff line).
+    fog = pow(fog, 0.75);
+
+    // Edge thickness in face-local UV. Use fwidth on screen-space gradient of
+    // a representative face coord so the wireframe stays roughly constant
+    // pixel-width regardless of depth.
+    float edgeMask = 0.0;
+    // Face-local coords (u along width-axis 0..1, v along height-axis 0..1).
+    float fu = 0.0, fv = 0.0;
+    float fuw = 0.002, fvw = 0.002;
+
+    vec3 fillCol;     // interior color
+    vec3 edgeCol;     // wireframe color (brighter, hotter)
+    float fillAlpha;  // interior opacity (translucent)
 
     if (isTop) {
-      // Top face is the BRIGHTEST face. Bias toward the front-top edge and
-      // column center.
-      float centerHi = smoothstep(0.0, 1.0, topCenter);
-      cellCol *= 0.95 + 0.65 * topApex * (0.5 + heightT);
-      cellCol += vec3(0.55, 0.50, 0.65) * centerHi * (0.35 + 0.7 * heightT);
+      // Top face: u across cell-X (cellXleft..cellXright), v across depth (zF..zB).
+      // Recover the world hit point for the top.
+      float zTop = (CAMERA_H - barH) * FOCAL * 0.5 / dyHorizon;
+      float xTop = (suv.x - 0.5) * 2.0 * zTop / FOCAL;
+      fu = (xTop - cellXleft) / max(cellXright - cellXleft, 1e-4);
+      fv = (zTop - zF) / max(zB - zF, 1e-4);
+      fuw = fwidth(fu) * 1.4;
+      fvw = fwidth(fv) * 1.4;
+
+      // Top face is dim (drop the chalky white cap entirely). Slight darken
+      // toward the back of the cell for shape readability.
+      fillCol = baseCol * (0.55 + 0.20 * topApex);
+      // Hot edge color: pull the chroma further around the palette so the
+      // wireframe glows like a neon outline.
+      edgeCol = bandColor(useFreq, min(heightT + 0.35, 1.0)) * 1.85;
+      fillAlpha = 0.50;
     } else if (isSide) {
-      // Side face is darker than top, lighter than front. Subtle vertical
-      // gradient brighter toward the top edge reads as ambient occlusion.
-      cellCol *= 0.62 + 0.35 * sideTopness;
-      // Slight depth gradient (front-edge of side face slightly brighter).
-      cellCol *= mix(1.05, 0.92, sideZness);
-      // Crisp top-edge highlight.
-      cellCol += vec3(0.55, 0.55, 0.80) * smoothstep(0.94, 1.0, sideTopness)
-              * (0.35 + 0.6 * heightT);
+      // Side face: u across depth (zF..zB), v across height (0..sideBarH).
+      fu = sideZness;                                     // 0 at front, 1 at back
+      fv = sideTopness;                                   // 0 at base, 1 at top
+      fuw = fwidth(fu) * 1.4;
+      fvw = fwidth(fv) * 1.4;
+
+      // Side fill is the band color, dimmed; vertical gradient = AO.
+      fillCol = baseCol * (0.42 + 0.30 * sideTopness);
+      edgeCol = bandColor(useFreq, min(heightT + 0.30, 1.0)) * 1.65;
+      fillAlpha = 0.55;
     } else {
-      // Front face is in shadow; gradient brighter toward the top edge.
-      cellCol *= 0.45 + 0.40 * frontTopness;
-      cellCol += vec3(0.75, 0.70, 0.95) * smoothstep(0.92, 1.0, frontTopness)
-              * (0.4 + 0.8 * heightT);
+      // Front face: u across cellX (cellXleft..cellXright), v across height.
+      fu = (xFront - cellXleft) / max(cellXright - cellXleft, 1e-4);
+      fv = frontTopness;
+      fuw = fwidth(fu) * 1.4;
+      fvw = fwidth(fv) * 1.4;
+
+      // Front is the most shadowed; darker fill so light leaks through it.
+      fillCol = baseCol * (0.32 + 0.32 * frontTopness);
+      edgeCol = bandColor(useFreq, min(heightT + 0.40, 1.0)) * 1.95;
+      fillAlpha = 0.60;
     }
 
-    // Distance fog (atmospheric perspective).
-    cellCol *= mix(1.0, 0.32, fog);
-    cellCol  = mix(cellCol, vec3(0.06, 0.04, 0.18), fog * 0.55);
+    // Edge = within fuw of u={0,1} OR within fvw of v={0,1}.
+    float eU = 1.0 - smoothstep(0.0, fuw, min(fu, 1.0 - fu));
+    float eV = 1.0 - smoothstep(0.0, fvw, min(fv, 1.0 - fv));
+    edgeMask = clamp(max(eU, eV), 0.0, 1.0);
 
-    // Whole-floor bass pulse + transient flash (contrasting cool tint).
-    cellCol *= 1.0 + 0.22 * u_bass;
-    cellCol  = mix(cellCol, cellCol * vec3(0.55, 0.85, 1.55), bassFlash * 0.35);
+    // Edges always glow (not subject to face-shadow).
+    // Quieter columns get thinner, softer edges; loud ones get hotter.
+    float edgeBoost = 0.55 + 0.85 * heightT;
+    edgeCol *= edgeBoost;
 
-    col = cellCol;
+    // Distance fog: at the back of the grid, fill and edge fully dissolve into
+    // the horizon haze color so the carpet has no visible cutoff line.
+    vec3 hazeCol = vec3(0.10, 0.08, 0.22);
+    fillCol *= mix(1.0, 0.18, fog);
+    fillCol  = mix(fillCol, hazeCol, fog * 0.92);
+    edgeCol *= mix(1.0, 0.30, fog);
+    edgeCol  = mix(edgeCol, hazeCol, fog * 0.85);
+
+    // Whole-floor bass pulse + transient cool-tint flash (fill only).
+    fillCol *= 1.0 + 0.22 * u_bass;
+    fillCol  = mix(fillCol, fillCol * vec3(0.55, 0.85, 1.55), bassFlash * 0.35);
+
+    // Composite over the existing `col` (sky/floor/farther bars). Edge wins
+    // with full opacity; interior is semi-transparent so overlapping columns
+    // blend their colors.
+    vec3 faceCol = mix(fillCol, edgeCol, edgeMask);
+    float faceAlpha = mix(fillAlpha, 1.0, edgeMask);
+    // Edges of distant bars shouldn't stay 100% opaque — let fog dissolve them
+    // all the way to invisible at the horizon, no hard cutoff line.
+    faceAlpha *= 1.0 - smoothstep(0.65, 1.0, fog);
+    col = mix(col, faceCol, faceAlpha);
   }
 
   // Subtle horizon stripe at the seam.

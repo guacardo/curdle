@@ -11,6 +11,8 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const pickerEl = document.getElementById("shader-picker") as HTMLSelectElement;
 const shuffleBtn = document.getElementById("shuffle-toggle") as HTMLButtonElement;
 const intervalInput = document.getElementById("shuffle-interval") as HTMLInputElement;
+const fpsBtn = document.getElementById("fps-toggle") as HTMLButtonElement;
+const fpsEl = document.getElementById("fps") as HTMLDivElement;
 const welcomeEl = document.getElementById("welcome") as HTMLDivElement;
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 
@@ -75,7 +77,35 @@ function bandAverage(from: number, to: number): number {
   return sum / ((to - from) * 255);
 }
 
+let fpsOn = localStorage.getItem("curdle.fps.enabled") === "true";
+let frameMsEma = 16.7;
+let lastFrameTs = 0;
+let lastFpsPaint = 0;
+
+function refreshFpsUI() {
+  fpsBtn.dataset.on = String(fpsOn);
+  fpsEl.hidden = !fpsOn;
+  if (!fpsOn) lastFpsPaint = 0;
+}
+fpsBtn.addEventListener("click", () => {
+  fpsOn = !fpsOn;
+  localStorage.setItem("curdle.fps.enabled", String(fpsOn));
+  refreshFpsUI();
+});
+refreshFpsUI();
+
 function frame() {
+  const now = performance.now();
+  if (lastFrameTs > 0) {
+    const dt = now - lastFrameTs;
+    frameMsEma += (dt - frameMsEma) * 0.1;
+  }
+  lastFrameTs = now;
+  if (fpsOn && now - lastFpsPaint >= 250) {
+    fpsEl.textContent = `${(1000 / frameMsEma).toFixed(0)} fps`;
+    lastFpsPaint = now;
+  }
+
   if (analyser) {
     analyser.getByteFrequencyData(fftBins);
     gl!.activeTexture(gl!.TEXTURE0);
