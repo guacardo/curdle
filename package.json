@@ -1,0 +1,12 @@
+{
+  "name": "curdle",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch server/index.ts",
+    "start": "bun server/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
