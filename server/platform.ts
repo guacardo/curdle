@@ -25,11 +25,23 @@ export async function getCaptureArgs(): Promise<string[]> {
       }
       return [...base, "-f", "pulse", "-i", `${sink}.monitor`, ...OUTPUT_ARGS];
     }
-    case "darwin":
-      throw new Error(
-        "macOS capture not yet implemented. Install BlackHole (https://existential.audio/blackhole/), " +
-        "route system audio to it, then add an avfoundation case here."
-      );
+    case "darwin": {
+      const listing = await $`ffmpeg -hide_banner -f avfoundation -list_devices true -i ""`
+        .nothrow().quiet();
+      const audioSection = new TextDecoder().decode(listing.stderr)
+        .split("AVFoundation audio devices:")[1] ?? "";
+      const match = audioSection.match(/\[(\d+)\]\s+BlackHole/);
+      if (!match) {
+        throw new Error(
+          "BlackHole audio device not found. Install BlackHole from " +
+          "https://existential.audio/blackhole/, then in Audio MIDI Setup create " +
+          "a Multi-Output Device that includes both your speakers and BlackHole, " +
+          "and set it as your system output. First run will trigger a macOS " +
+          "microphone-permission prompt for the terminal app — grant it."
+        );
+      }
+      return [...base, "-f", "avfoundation", "-i", `:${match[1]}`, ...OUTPUT_ARGS];
+    }
     case "win32":
       throw new Error(
         "Windows capture not yet implemented. Try: -f wasapi -i loopback (requires recent ffmpeg)."

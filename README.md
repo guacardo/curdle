@@ -46,10 +46,22 @@ ffmpeg ──PCM─▶ Bun WebSocket ──PCM─▶ AudioWorklet ──▶ Anal
 | Platform | Status      | Notes                                              |
 | -------- | ----------- | -------------------------------------------------- |
 | Linux    | Working     | Captures default PipeWire/PulseAudio sink monitor. |
-| macOS    | Not yet     | Will need ScreenCaptureKit (`-f sck`) or BlackHole.|
+| macOS    | Working\*   | Requires BlackHole — see setup below.              |
 | Windows  | Not yet     | Will need WASAPI loopback.                         |
 
 Add new platforms in `server/platform.ts`.
+
+### macOS setup
+
+macOS doesn't let apps capture system audio directly, so `curdle` reads from
+[BlackHole](https://existential.audio/blackhole/), a free virtual audio driver:
+
+1. Install BlackHole (the 2ch variant is enough).
+2. Open *Audio MIDI Setup* → *+* → *Create Multi-Output Device*. Tick both your
+   speakers/headphones and *BlackHole 2ch*.
+3. Set that Multi-Output Device as your system output (in Sound preferences).
+4. Run `./run.sh`. The first run triggers a microphone-permission prompt
+   attributed to your terminal app — grant it once.
 
 ## Adding a shader
 
