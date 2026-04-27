@@ -10,11 +10,12 @@
 const int   NUM_SLICES   = 32;     // back-to-front Z iterations (compile-time const)
 const float HORIZON_Y    = 0.5;    // screen Y of the horizon
 const float CAMERA_H     = 0.35;   // camera height above ground in world units
-const float NEAR_Z       = 0.6;    // closest slice distance
+const float NEAR_Z       = 0.42;   // closest slice — chosen so the front row's base sits
+                                   // right at the bottom of the screen given CAMERA_H/FOV.
 const float FAR_Z        = 8.0;    // farthest slice distance
-const float GROUND_HALF  = 0.30;   // world half-width of the spectrum strip — sized so all
-                                   // bins span the full screen width at NEAR_Z (perspective then
-                                   // tapers it toward the horizon, giving the classic look).
+const float GROUND_HALF  = 0.382;  // world half-width of the spectrum strip — equals NEAR_Z/f,
+                                   // so all bins span the full screen width at NEAR_Z. Perspective
+                                   // then tapers the strip toward the horizon for the classic look.
 const float NUM_BINS     = 48.0;   // logical frequency columns
 
 // Project a world-space (x, y, z) onto screen UV space, with horizon at HORIZON_Y.

@@ -53,30 +53,20 @@ Add new platforms in `server/platform.ts`.
 
 ## Adding a shader
 
-1. Drop `your-shader.frag` into `shaders/`.
-2. Define `void main()`. The following uniforms and helpers are available
-   automatically (see `shaders/common.glsl`):
+1. Drop `your-shader.frag` into `shaders/`. Define `void main()` and write
+   to `outColor`. Don't redeclare `#version`, `precision`, or any uniforms —
+   they're prepended automatically.
+2. Refresh the browser. Shaders are auto-discovered from disk; the picker
+   updates on reload.
 
-   ```glsl
-   uniform float u_time;        // seconds since start
-   uniform vec2  u_resolution;  // canvas size in pixels
-   uniform sampler2D u_fft;     // 1D R8 texture, 512 bins (0=bass, 1=treble)
-   uniform float u_bass;        // 0..1 (bins 0–7,    ~0–375 Hz)
-   uniform float u_mid;         // 0..1 (bins 8–63,   ~375 Hz–3 kHz)
-   uniform float u_treble;      // 0..1 (bins 64–511, ~3 kHz–12 kHz)
-   uniform float u_volume;      // 0..1 (mean of all bins)
+The full contract — available uniforms, helpers, constraints, reserved-word
+gotchas — lives in [`shaders/common.glsl`](shaders/common.glsl) and
+[`.claude/agents/shader-builder.md`](.claude/agents/shader-builder.md).
 
-   in  vec2 v_uv;       // [0,1] screen UV
-   out vec4 outColor;
-
-   float sampleFFT(float t);                    // sample texture at freq t
-   vec3  palette(float t, vec3 a, vec3 b, vec3 c, vec3 d);   // IQ palette
-   float fbm(vec2 p);                           // 4-octave value noise
-   mat2  rot2d(float a);
-   float smin(float a, float b, float k);
-   ```
-
-3. Add the shader name to the `SHADERS` array in `client/main.ts`.
+The latter doubles as a Claude Code subagent definition: running Claude
+Code from this directory lets you say "build me a shader that does X" and
+it spawns a `shader-builder` agent that knows the contract. Multiple agents
+can run in parallel since shaders are auto-discovered.
 
 ## Layout
 
@@ -95,5 +85,5 @@ curdle/
 │   └── audio-worklet.js    PCM → Float32 ring buffer → Web Audio
 └── shaders/
     ├── common.glsl         Shared header (uniforms, helpers)
-    └── liquid-metal.frag   First shader
+    └── *.frag              Individual shaders (auto-discovered at runtime)
 ```

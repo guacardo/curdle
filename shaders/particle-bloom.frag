@@ -8,6 +8,93 @@
 const int N_PER_RING = 16;
 const int N_TOTAL    = 32;
 
+// Electron rings: three concentric outer rings of small, transient-driven
+// particles. Each ring samples a narrower, higher band than the previous.
+const int N_PER_ERING = 18;
+const int N_ERINGS    = 3;
+const int N_ETOTAL    = 54; // N_PER_ERING * N_ERINGS
+
+// One "electron" particle. Same idea as particle() but driven by transient
+// energy (now minus a windowed past mean) so it flashes on attacks and dies
+// fast instead of glowing through sustained treble.
+vec3 electron(vec2 p, int idx, float t) {
+  int ring = idx / N_PER_ERING;             // 0,1,2 (inner -> outer of the new set)
+  int slot = idx - ring * N_PER_ERING;
+  float fring = float(ring);
+
+  // Frequency band per ring: each one narrower and higher than the last.
+  // ring 0 -> upper-treble (0.55..0.75)
+  // ring 1 -> top-treble   (0.75..0.90)
+  // ring 2 -> very highest (0.90..1.00)
+  float bandLo, bandHi;
+  if (ring == 0)      { bandLo = 0.55; bandHi = 0.75; }
+  else if (ring == 1) { bandLo = 0.75; bandHi = 0.90; }
+  else                { bandLo = 0.90; bandHi = 1.00; }
+  float freq = bandLo + (bandHi - bandLo) * (float(slot) + 0.5) / float(N_PER_ERING);
+
+  // Transient detector: instantaneous energy minus a short windowed mean of
+  // the recent past. Negative values clamped to zero — we only want attacks.
+  float now = sampleFFT(freq);
+  float past = (
+      sampleFFTHistory(freq, 0.10) +
+      sampleFFTHistory(freq, 0.20) +
+      sampleFFTHistory(freq, 0.35) +
+      sampleFFTHistory(freq, 0.55)
+  ) * 0.25;
+  float transient = max(now - past * 0.85, 0.0);
+  // Sharpen: pow(.,0.5) to make small attacks pop, then a soft threshold
+  // so quiet treble stays dark and real hits BURST.
+  float excite = smoothstep(0.04, 0.35, pow(transient, 0.5));
+
+  // Ring radii: progressively larger; outermost reaches near screen edges.
+  // Min screen half-extent in our normalized coords is 0.5.
+  float baseR = 0.72 + 0.13 * fring;        // 0.72, 0.85, 0.98
+
+  // Radial bounce — outer rings oscillate faster ("electrons orbit faster").
+  // Per-particle phase keeps them out of unison.
+  float bounceFreq = 2.2 + 1.8 * fring;
+  float phase      = float(slot) * 1.913 + fring * 2.7;
+  float bounce     = 0.018 * sin(t * bounceFreq + phase);
+  // Attack momentarily kicks the particle outward a bit too.
+  float radius = baseR + bounce + 0.025 * excite;
+
+  // Counter-rotate by ring so adjacent rings don't shear together; very slow
+  // base spin that picks up with treble (these are the "fast" guys).
+  float dir  = (ring == 1) ? -1.0 : 1.0;
+  float spin = t * (0.22 + 0.45 * u_treble) * dir;
+  float ang  = TAU * (float(slot) + 0.5) / float(N_PER_ERING) + spin
+             + fring * (PI / float(N_PER_ERING)); // stagger per ring
+
+  vec2 center = radius * vec2(cos(ang), sin(ang));
+
+  // Tiny particles — ~0.35x the existing outer ring's nominal size.
+  // Size grows a little with excite so flashes are also visually larger.
+  float size = 0.0095 + 0.018 * excite;
+  float k = 1.0 / max(size * size, 1e-5);
+
+  vec2 d = p - center;
+  float r2 = dot(d, d);
+  float fall = exp(-r2 * k);
+
+  // Icy palette — pale cyans, electric violets, whites.
+  // Parameterize by ring + slight time drift so colors shimmer.
+  float cT = 0.55 + 0.12 * fring + 0.04 * t + 0.03 * float(slot);
+  vec3 col = palette(
+    cT,
+    vec3(0.85, 0.90, 1.00),  // bright cool base
+    vec3(0.20, 0.25, 0.35),  // gentle chroma swing
+    vec3(1.00, 1.00, 1.20),  // freq triplet (violet drifts faster)
+    vec3(0.20, 0.30, 0.55)   // phase: pushes toward cyan/violet
+  );
+
+  // Brightness: dominated by the transient. Tiny idle so the rings are
+  // hinted-at when totally silent (not strictly required, but reads nicer).
+  float idle  = 0.015 + 0.010 * sin(t * 2.1 + float(idx) * 0.31);
+  float bright = idle + 3.6 * excite * excite;
+
+  return col * fall * bright;
+}
+
 // One particle's contribution at screen-space point p.
 // idx encodes both ring assignment and angular slot.
 vec3 particle(vec2 p, int idx, float t) {
@@ -90,6 +177,11 @@ void main() {
     col += particle(uv, i, t);
   }
 
+  // Electron rings — added on top, additive. Tiny, transient-driven, cool.
+  for (int i = 0; i < N_ETOTAL; i++) {
+    col += electron(uv, i, t);
+  }
+
   // Faint radial haze pumped by overall volume — gives the "atmosphere"
   // around the dots without washing them out.
   float haze = exp(-length(uv) * 1.6) * (0.04 + 0.18 * u_volume);
@@ -99,8 +191,9 @@ void main() {
   float core = exp(-dot(uv, uv) * 6.0) * u_bass * 0.6;
   col += core * vec3(1.00, 0.55, 0.30);
 
-  // Soft vignette.
-  float vig = smoothstep(1.25, 0.25, length(uv));
+  // Soft vignette — pushed further out so the outer electron ring can still
+  // punch through near the edges/corners on transient hits.
+  float vig = smoothstep(1.55, 0.30, length(uv));
   col *= vig;
 
   // Reinhard-ish tonemap: keep additive sums from clipping to white.
