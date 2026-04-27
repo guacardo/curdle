@@ -1,4 +1,6 @@
-// liquid-metal: chromatic surface that destabilizes ("curdles") on bass hits.
+// liquid-curdle: the original liquid-metal — chromatic surface that destabilizes
+// ("curdles") on bass hits. Preserved when liquid-metal evolved into a cel-shaded
+// oil-on-steel; this version is the smooth, gradient-based ancestor.
 // - Domain warp driven by FBM, amplitude modulated by bass.
 // - IQ palette over warp magnitude, hue rotated by time + mids.
 // - Treble adds a fine chromatic ripple and edge sharpness.
