@@ -63,6 +63,41 @@ body:hover #ui { opacity: 1; }
   font-size: 12px;
 }
 
+#shuffle-toggle {
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+#shuffle-toggle[data-on="true"] {
+  background: rgba(120, 200, 255, 0.15);
+  border-color: rgba(120, 200, 255, 0.55);
+  color: rgb(190, 230, 255);
+}
+
+#shuffle-interval {
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  width: 56px;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+#shuffle-interval::-webkit-outer-spin-button,
+#shuffle-interval::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 #welcome[hidden] { display: none; }
 
 #welcome {

@@ -9,6 +9,8 @@ const SAMPLE_RATE = 48000;
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const pickerEl = document.getElementById("shader-picker") as HTMLSelectElement;
+const shuffleBtn = document.getElementById("shuffle-toggle") as HTMLButtonElement;
+const intervalInput = document.getElementById("shuffle-interval") as HTMLInputElement;
 const welcomeEl = document.getElementById("welcome") as HTMLDivElement;
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 
@@ -128,6 +130,76 @@ async function populatePicker(): Promise<string[]> {
 }
 pickerEl.addEventListener("change", () => switchShader(pickerEl.value));
 
+let shuffleOn = localStorage.getItem("curdle.shuffle.enabled") === "true";
+let shuffleIntervalSec = clampInterval(Number(localStorage.getItem("curdle.shuffle.intervalSec")) || 15);
+let shuffleQueue: string[] = [];
+let shuffleTimer: number | null = null;
+let allShaderNames: string[] = [];
+
+function clampInterval(n: number): number {
+  if (!Number.isFinite(n)) return 15;
+  return Math.min(300, Math.max(3, Math.round(n)));
+}
+
+function fyShuffle<T>(arr: T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function refillQueue(avoid: string | null) {
+  shuffleQueue = fyShuffle(allShaderNames);
+  // Don't replay the current shader as the next pick.
+  if (avoid && shuffleQueue[0] === avoid && shuffleQueue.length > 1) {
+    [shuffleQueue[0], shuffleQueue[1]] = [shuffleQueue[1], shuffleQueue[0]];
+  }
+}
+
+function advanceShuffle() {
+  if (allShaderNames.length < 2) return;
+  if (shuffleQueue.length === 0) refillQueue(pickerEl.value);
+  const next = shuffleQueue.shift()!;
+  pickerEl.value = next;
+  switchShader(next);
+}
+
+function startShuffleTimer() {
+  stopShuffleTimer();
+  if (!shuffleOn || allShaderNames.length < 2) return;
+  shuffleTimer = window.setInterval(advanceShuffle, shuffleIntervalSec * 1000);
+}
+
+function stopShuffleTimer() {
+  if (shuffleTimer !== null) {
+    clearInterval(shuffleTimer);
+    shuffleTimer = null;
+  }
+}
+
+function refreshShuffleUI() {
+  shuffleBtn.dataset.on = String(shuffleOn);
+  intervalInput.value = String(shuffleIntervalSec);
+}
+
+shuffleBtn.addEventListener("click", () => {
+  shuffleOn = !shuffleOn;
+  localStorage.setItem("curdle.shuffle.enabled", String(shuffleOn));
+  refreshShuffleUI();
+  startShuffleTimer();
+});
+
+intervalInput.addEventListener("change", () => {
+  shuffleIntervalSec = clampInterval(Number(intervalInput.value));
+  localStorage.setItem("curdle.shuffle.intervalSec", String(shuffleIntervalSec));
+  refreshShuffleUI();
+  if (shuffleOn) startShuffleTimer();
+});
+
+refreshShuffleUI();
+
 async function boot() {
   welcomeEl.hidden = true;
   setStatus("connecting", "starting audio…");
@@ -170,8 +242,10 @@ async function boot() {
     setStatus("error", "no shaders found in /shaders/");
     return;
   }
+  allShaderNames = names;
   pickerEl.value = names[0];
   await switchShader(names[0]);
+  startShuffleTimer();
   requestAnimationFrame(frame);
 }
 
