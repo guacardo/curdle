@@ -2,9 +2,26 @@
 // A perspective grid of square tiles lying flat on the floor, viewed from a low
 // camera looking forward. Each tile is one (frequency × time) pair and pops a
 // vertical column upward proportional to its FFT magnitude. The vanishing point
-// sits at screen center on the horizon line. Newer audio lives in the front row;
-// older audio rolls back toward the horizon as time advances.
-// Above the horizon (screen Y = 0.5): a slow rotating fbm nebula.
+// sits at screen center on the horizon line. Above the horizon: a slow rotating
+// fbm nebula.
+//
+// CONVEYOR-BELT VU METER (the time axis):
+// Each "strip" is a full row of bars across all 32 frequencies, captured as a
+// frozen FFT snapshot at one instant. Strips translate continuously in -Z
+// (away from camera) over time — real depth motion, not values rippling
+// through fixed geometry. When a strip crosses the far plane, it wraps back
+// to the camera and grabs a new snapshot.
+//
+// Implementation:
+//   Strip slot i ∈ [0, K_TIME). Continuous "age" a(i) = i + phi, where
+//     phi = fract(u_time / STRIP_INTERVAL) ∈ [0,1).
+//   As u_time grows, phi grows → every strip's a(i) grows → every strip
+//   slides geometrically back in Z. When phi wraps 1→0, slot 0's a jumps
+//   from ~1 to ~0 (fresh strip at camera), while what was slot 0 at a≈1
+//   is now seamlessly slot 1 at a≈1 (same Z, same captured snapshot).
+//   FFT depth for strip i: depth = a(i) * STRIP_INTERVAL / HIST_SECONDS.
+//   This grows as the strip ages, which is exactly right — it points to the
+//   same wall-clock moment in the FFT history's sliding window.
 
 // ---- Camera & projection ----
 // Pinhole. Camera at world (0, CAMERA_H, 0) looking forward (tiles at +Z).
@@ -21,22 +38,34 @@ const float FOCAL    = 0.85;    // smaller = wider FOV (was 1.2)
 const float HORIZON  = 0.52;    // horizon slightly above center
 
 // ---- Floor / cell grid ----
-// 32 freq columns × 32 time rows. Visible gaps so it reads as discrete tiles.
-// Row depth grows GEOMETRICALLY (not linearly): near rows are chunky squares,
-// far rows stretch deep into Z so the carpet reaches the horizon without
-// blowing up the per-fragment loop count. The cell *width* on screen still
-// shrinks naturally with 1/Z, so distant rows merge into the horizon haze
-// instead of ending in a hard cutoff line.
+// 32 freq columns × 32 strips. Visible gaps so it reads as discrete tiles.
+// Strip depth grows GEOMETRICALLY: near strips are chunky squares, far strips
+// stretch deep into Z so the carpet reaches the horizon without blowing up
+// the per-fragment loop count. The cell *width* on screen still shrinks
+// naturally with 1/Z, so distant strips merge into the horizon haze.
 //
-// Z layout: zFront(r) = Z_NEAR * pow(Z_GROWTH, r). With Z_NEAR=0.42 and
-// Z_GROWTH=1.165, r=31 lands at ~52 world units — projected dyHorizon at
-// that depth is ~0.005 of screen height, i.e. effectively the horizon line.
+// Z layout (with continuous slide phi ∈ [0,1)):
+//   zFront(i) = Z_NEAR * pow(Z_GROWTH, i + phi)
+//   zBack(i)  = Z_NEAR * pow(Z_GROWTH, i + phi + 1)
+// As phi sweeps 0→1, each strip slides one geometric step backward, then
+// recycles when phi wraps. With Z_NEAR=0.42 and Z_GROWTH=1.165, age 32
+// lands at ~52 world units — effectively the horizon line.
 const int   K_FREQ   = 32;
-const int   K_TIME   = 32;
+const int   K_TIME   = 32;     // # of strip slots (also depth of recycle ring)
 const float CELL_W   = 0.075;   // tile width in world units (X) — fixed
 const float GAP      = 0.16;    // fraction of cell that is gap
-const float Z_NEAR   = 0.42;    // front-row Z front edge
-const float Z_GROWTH = 1.165;   // each row's Z extent multiplied by this
+const float Z_NEAR   = 0.42;    // youngest-strip front edge (at phi=0)
+const float Z_GROWTH = 1.165;   // each strip's Z extent multiplied by this
+
+// ---- Strip conveyor ----
+// HIST_SECONDS = approximate length of FFT history texture (~1s, 64 frames).
+// STRIP_INTERVAL = wall-clock seconds between snapshot captures. Choosing
+// HIST_SECONDS / K_TIME means the oldest strip lands at history depth ~1.0
+// (oldest available frame), so we use the full history without aliasing past
+// the buffer's end. Independent of FFT history sample rate — we resample
+// the texture continuously, so any rate works as long as depth ≤ 1.
+const float HIST_SECONDS  = 1.0;
+const float STRIP_INTERVAL = HIST_SECONDS / float(K_TIME);
 
 // Hard ceiling on column height. Pushed ~5x so loud peaks reach ~60-70% of
 // screen height. Note: when barH > CAMERA_H, the column TOP rises ABOVE the
@@ -212,19 +241,17 @@ void main() {
     }
   }
 
-  // ===================== COLUMNS =====================
-  // Per-fragment strategy: walk all 32 ROWS (Z slices) back-to-front.
-  // For each row we test THREE faces of (potentially distinct) columns:
+  // ===================== STRIPS (CONVEYOR BELT) =====================
+  // Per-fragment strategy: walk all K_TIME strips back-to-front.
+  // For each strip we test THREE faces of (potentially distinct) columns:
   //   TOP    — face at world (x in cell, y=barH, z in [zF,zB])
   //   FRONT  — face at world (x in cell, y in [0,barH], z = zF)
   //   SIDE   — face at fixed X (right edge for cells left-of-camera, left
   //            edge for cells right-of-camera), y in [0,barH], z in [zF,zB]
   //
-  // The TOP/FRONT tests use the cell identified by xFront (the column whose
-  // footprint contains the ray at zF). The SIDE test identifies a separate
-  // candidate cell whose visible side-edge plane the ray would intersect at
-  // mid-row depth (because a fragment in the inter-cell gap is often a side
-  // face of the neighbor, not a front face).
+  // Critical change vs the old row-based design: strip i's age (and thus
+  // both its Z position AND the FFT history depth its bars sample at) is
+  // a continuous function of u_time. Strips physically translate.
 
   float halfGridX = float(K_FREQ) * CELL_W * 0.5;
   float dyHorizon = HORIZON - suv.y; // can be negative (above horizon)
@@ -236,19 +263,37 @@ void main() {
   float zFar = gridZFar();
   float logZSpan = log2(max(zFar / Z_NEAR, 1.0001));
 
+  // Conveyor phase: as u_time advances, every strip slides backward in Z.
+  // When phi wraps 1→0, slot 0 gets a fresh snapshot at the camera while
+  // every other slot's content rolls back one notch (slot k inherits the
+  // capture time slot k-1 had a moment ago). Because age(k=0,phi=1) ==
+  // age(k=1,phi=0), the recycle is geometrically continuous — no pop.
+  float phi = fract(u_time / STRIP_INTERVAL);
+
   for (int r = K_TIME - 1; r >= 0; r--) {
-    float rf = float(r);
+    // Continuous strip age in "interval units". age=0 → at camera;
+    // age=K_TIME → at the far horizon. Same age forever for a given snapshot.
+    float rf = float(r) + phi;
     float zFront = rowZFront(rf);
     float zBack  = rowZBack(rf);
-    float cellD  = zBack - zFront;          // this row's Z extent
+    float cellD  = zBack - zFront;          // this strip's Z extent
 
     // Inset for gap so cells read as discrete tiles.
     float zF = zFront + cellD * GAP * 0.5;
     float zB = zBack  - cellD * GAP * 0.5;
     float zMid = 0.5 * (zF + zB);
 
-    // depthNorm: 0 at front (now), ~1 at back (oldest in history).
-    float depthNorm = rf / float(K_TIME - 1);
+    // FFT-history depth for this strip's frozen snapshot. As the strip ages
+    // (rf grows), depthNorm grows — pointing back into the sliding history
+    // window so we keep reading the SAME wall-clock moment. Strip i's bars
+    // are all sampled at this single depth → one snapshot per strip.
+    float depthNorm = clamp(rf * STRIP_INTERVAL / HIST_SECONDS, 0.0, 1.0);
+
+    // Spawn fade: strip 0 starts at the camera with phi≈0 and slides out as
+    // phi→1. To avoid a hard pop on respawn, ramp its alpha across its first
+    // STRIP_INTERVAL of life. After r=0 ages off (phi wraps), the next slot 0
+    // begins at phi=0 with alpha=0 and ramps up.
+    float spawnFade = (r == 0) ? smoothstep(0.0, 0.85, phi) : 1.0;
 
     // -------- Identify the X cell this fragment maps to in THIS row --------
     // Use the front-face X mapping (the part of the column actually facing camera).
@@ -467,6 +512,23 @@ void main() {
     // Edges of distant bars shouldn't stay 100% opaque — let fog dissolve them
     // all the way to invisible at the horizon, no hard cutoff line.
     faceAlpha *= 1.0 - smoothstep(0.65, 1.0, fog);
+
+    // Height-driven transparency: short stubs stay grounded and solid, tall
+    // columns turn glassy so the user can see the scene (and other bars)
+    // behind them. Fill drops aggressively; edges keep more presence so the
+    // wireframe silhouette of tall bars still reads.
+    //   heightT ∈ [0,1] (1.0 = at MAX_BAR_H ≈ 1.36 world units).
+    // Map: heightT 0..0.18 → 1.0 (fully opaque short cubes),
+    //      heightT 0.18..0.95 → falls toward 0.18 (very transparent fill).
+    float tallness = smoothstep(0.18, 0.95, heightT);
+    float fillTrans = mix(1.0, 0.18, tallness);  // fill alpha multiplier
+    float edgeTrans = mix(1.0, 0.55, tallness);  // edges fade less so silhouette holds
+    float heightAlpha = mix(fillTrans, edgeTrans, edgeMask);
+    faceAlpha *= heightAlpha;
+
+    // Conveyor spawn fade — keeps the youngest strip from popping in at z=Z_NEAR.
+    faceAlpha *= spawnFade;
+
     col = mix(col, faceCol, faceAlpha);
   }
 

@@ -1,19 +1,26 @@
-// disco-mirage: a faceted disco ball at the center of a kaleidoscopic mirror
-// hall, glazed with oil-slick thin-film iridescence and rippling like the
-// scene is viewed through water.
+// disco-mirage: a faceted disco ball punching a hole through spacetime, ringed
+// by a gravitational lens, accretion-disk streaks, and a churning spectral
+// nebula. Event-Horizon-grade distortion around a kaleidoscopic mirror hall.
 //
 // Layered construction:
 //   1) Water-ripple domain warp on screen UVs — concentric sin waves whose
 //      wavelength is set by spatial FFT energy, amplitude by u_bass.
-//   2) Mirror-hall outside the ball: 8-fold kaleidoscopic fold of the warped
+//   2) Gravitational lensing: radial pull toward the ball + tangential
+//      "frame-drag" swirl that intensifies near the event horizon, plus
+//      chromatic aberration that splits R/G/B sample positions along the
+//      lens gradient.
+//   3) Spectral nebula backdrop: layered fbm + hash starfield + FFT history
+//      haze so the field behind the ball feels dense and alive.
+//   4) Mirror-hall outside the ball: 8-fold kaleidoscopic fold of the warped
 //      UV, projected through a long-tail beam function so light streaks shoot
 //      radially outward. Treble drives streak count + sharpness.
-//   3) Disco ball as a fake sphere (z = sqrt(R^2 - r^2)). The sphere surface
+//   5) Accretion-disk tangential streaks dragged around the ball's silhouette.
+//   6) Disco ball as a fake sphere (z = sqrt(R^2 - r^2)). The sphere surface
 //      is partitioned into hexagonal-ish facets via a polar Voronoi (a stable
 //      cell layout in spherical coords). Each facet has its own:
 //       - sparkle phase (deterministic hash) lit by treble transients
 //       - thin-film oil tint indexed by facet-normal . view + time
-//   4) Bass squeezes the ball radius and pumps the mirror beams.
+//   7) Bass squeezes the ball radius and pumps the mirror beams + lensing.
 //
 // Cool palette throughout — cyans, deep blues, magentas, electric violet.
 // The IQ palette parameters are tuned to never land on warm yellows.
@@ -85,6 +92,81 @@ float facetEdge(vec3 n) {
   return edge;
 }
 
+// Gravitational lens warp: pulls a sample point toward the singularity at
+// origin and adds tangential "frame-drag" swirl whose intensity blows up as
+// you approach the event horizon. Returns the warped sample position.
+//   p:        screen-space sample point
+//   horizon:  effective lens radius (≈ ball radius)
+//   pull:     radial strength (0..~1)
+//   swirl:    tangential strength (0..~1)
+vec2 gravLens(vec2 p, float horizon, float pull, float swirl) {
+  float rr = length(p);
+  if (rr < 1e-4) return p;
+  // Schwarzschild-ish falloff: strong near horizon, gentle far away.
+  // We bottom-out the denominator at horizon so we don't divide by zero.
+  float denom = max(rr, horizon * 0.55);
+  float lens = horizon / denom;          // ~1 at horizon, ~0 at infinity
+  lens = lens * lens;                    // square it for sharper near-field
+  // Radial inward pull.
+  vec2 dirIn = -p / rr;
+  vec2 warped = p + dirIn * pull * horizon * lens;
+  // Tangential drag — perpendicular to radius, more swirl as you near horizon.
+  vec2 tanDir = vec2(-p.y, p.x) / rr;
+  warped += tanDir * swirl * horizon * lens * 1.1;
+  return warped;
+}
+
+// Spectral nebula behind the ball. Three layers stacked so the field reads as
+// dense and 3D rather than flat fbm:
+//   - low-frequency rumble (bass)
+//   - mid-frequency wash (mid + fbm history)
+//   - high-frequency starfield flicker (treble + hash)
+vec3 spectralNebula(vec2 p, float t) {
+  // Layer 1: slow churning low-frequency rumble — bass pushes it.
+  vec2 q1 = p * 1.1 + vec2(t * 0.05, -t * 0.03);
+  float rumble = fbm(q1);
+  rumble = pow(rumble, 1.6);
+  float bassPush = 0.25 + 1.4 * pow(u_bass, 1.3);
+
+  // Layer 2: mid-frequency wash. Domain-warped fbm so it has filaments.
+  vec2 q2 = p * 2.1;
+  vec2 warp = vec2(fbm(q2 + vec2(t * 0.1, 0.0)),
+                   fbm(q2 + vec2(0.0, t * 0.13)));
+  float wash = fbm(q2 + 1.6 * warp + vec2(-t * 0.07, t * 0.04));
+  float midPush = 0.4 + 1.2 * u_mid;
+
+  // Layer 3: high-frequency hash starfield. Sparse points lit by treble.
+  vec2 sp = p * 14.0;
+  vec2 cellId = floor(sp);
+  vec2 cellUv = fract(sp) - 0.5;
+  float starHash = hash21(cellId);
+  // Only ~6% of cells host a star.
+  float starMask = step(0.94, starHash);
+  float starDist = length(cellUv);
+  float star = starMask * pow(max(0.0, 1.0 - starDist * 2.4), 6.0);
+  // Twinkle: each star has its own freq slot, lit by treble bins.
+  float twinkleFreq = 0.55 + 0.45 * fract(starHash * 7.31);
+  float twinkle = sampleFFT(twinkleFreq);
+  star *= 0.4 + 2.5 * twinkle * (0.4 + u_treble);
+
+  // FFT history haze — recent spectral past, sampled radially so a "memory
+  // ring" of music drifts across the backdrop.
+  float ang = atan(p.y, p.x);
+  float histFreq = fract(ang / TAU + 0.5 + t * 0.02);
+  float histDepth = clamp(length(p) * 0.45, 0.0, 0.95);
+  float haze = sampleFFTHistory(histFreq, histDepth);
+
+  // Compose into a dark cool field.
+  vec3 baseCol = vec3(0.015, 0.022, 0.05);
+  vec3 col = baseCol;
+  col += oilSlick(0.62 + 0.18 * rumble) * rumble * bassPush * 0.18;
+  col += oilSlick(0.38 + 0.25 * wash) * wash * midPush * 0.15;
+  col += vec3(0.85, 0.92, 1.15) * star;
+  col += oilSlick(0.5 + 0.2 * haze) * haze * 0.10;
+
+  return col;
+}
+
 void main() {
   vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution) / min(u_resolution.x, u_resolution.y);
   float t = u_time;
@@ -104,10 +186,25 @@ void main() {
   vec2 rippleDir = (rd > 1e-4) ? (uv - rippleSrc) / rd : vec2(0.0, 1.0);
   vec2 wuv = uv + rippleDir * ripple * ripAmp;
 
+  // ===== 1b) Gravitational lens warp =======================================
+  // Apply Event-Horizon-grade radial pull + frame-drag swirl. Strength ramps
+  // with bass so kicks visibly bend the surrounding field inward. The lensed
+  // sample position `luv` is used for backdrop + beam lookups so it looks
+  // like the entire field is being dragged toward the singularity. The ball
+  // itself uses the unlensed `wuv` so its silhouette stays solid.
+  float horizon = 0.34 + 0.05 * bassPump;
+  float lensPull  = 0.28 + 0.55 * bassPump;
+  float lensSwirl = 0.35 + 0.45 * pow(u_mid, 1.2) + 0.25 * bassPump;
+  // Slow rotation of the swirl axis so the spacetime tear feels alive.
+  lensSwirl *= 1.0 + 0.25 * sin(t * 0.7);
+  vec2 luv = gravLens(wuv, horizon, lensPull, lensSwirl);
+
   // ===== 2) Mirror-hall (kaleidoscopic beams outside the ball) =============
-  // Convert warped uv to polar; reflect azimuth into a wedge for kaleidoscope.
-  float r = length(wuv);
-  float ang = atan(wuv.y, wuv.x);
+  // Convert lensed uv to polar; reflect azimuth into a wedge for kaleidoscope.
+  // (Beams sample the lensed coords so they visibly bend around the horizon.)
+  float r = length(wuv);                    // unlensed radius for ball test
+  float rL = length(luv);                   // lensed radius for backdrop/beams
+  float ang = atan(luv.y, luv.x);
   // Slow rotation so the mirror hall spins like a real ball is throwing it.
   ang += t * 0.15 + 0.6 * u_mid;
 
@@ -129,26 +226,64 @@ void main() {
   beam *= 0.4 + 1.6 * petalEnergy;
 
   // Radial tail: bright near the ball, fades outward; bass extends reach.
-  float tail = exp(-r * (3.2 - 1.6 * bassPump));
+  // Uses lensed radius so beams visibly compress as the lens drags them in.
+  float tail = exp(-rL * (3.2 - 1.6 * bassPump));
   // A second high-freq radial striation to suggest scattered glints.
-  float strobe = 0.5 + 0.5 * sin(r * 60.0 - t * 9.0 + petalIdx * 1.7);
+  float strobe = 0.5 + 0.5 * sin(rL * 60.0 - t * 9.0 + petalIdx * 1.7);
   beam *= tail * (0.55 + 0.45 * strobe);
 
   // Beam color from oil-slick palette indexed by petal + time.
   float beamHue = 0.45 + 0.35 * sin(petalIdx * 0.91 + t * 0.4) + 0.15 * u_treble;
   vec3 beamCol = oilSlick(beamHue) * beam * 1.4;
 
-  // Ambient deep-water backdrop so silence still has color.
-  vec3 backdrop = mix(
-    vec3(0.02, 0.03, 0.08),
-    oilSlick(0.55 + 0.15 * sin(t * 0.13)) * 0.18,
-    smoothstep(0.0, 1.2, r)
-  );
-  // Slow churning fbm tint behind the beams — keeps the field alive.
-  float churn = fbm(wuv * 1.4 + vec2(t * 0.08, -t * 0.05));
-  backdrop += oilSlick(0.6 + 0.2 * churn) * 0.06;
+  // ===== Spectral nebula backdrop with chromatic aberration ================
+  // Lens strength at this fragment — used to drive both CA and streak smear.
+  float uvLen = length(uv);
+  float denomCA = max(uvLen, horizon * 0.55);
+  float lensField = (horizon * horizon) / (denomCA * denomCA);
+  float caAmount = 0.022 * (lensPull + 0.6) * lensField;
+  // CA offsets along the radial direction (toward the ball).
+  vec2 radDir = (uvLen > 1e-4) ? uv / uvLen : vec2(0.0, 1.0);
+  // Sample nebula 3x with split offsets — Red pulled in less, Blue pulled in
+  // more, so the chromatic split intensifies as you approach the horizon.
+  // Sampling from `luv` (lensed) means the nebula itself appears warped.
+  vec3 nebR = spectralNebula(luv + radDir * caAmount, t);
+  vec3 nebG = spectralNebula(luv,                     t);
+  vec3 nebB = spectralNebula(luv - radDir * caAmount, t);
+  vec3 backdrop = vec3(nebR.r, nebG.g, nebB.b);
+  // Lift the backdrop slightly toward warmer-cool away from center so the
+  // limb of the lens reads as having atmosphere.
+  backdrop += oilSlick(0.55 + 0.15 * sin(t * 0.13)) * 0.04 *
+              smoothstep(0.0, 1.2, rL);
 
   vec3 col = backdrop + beamCol;
+
+  // ===== Accretion-disk tangential streaks =================================
+  // Streaks dragged around the silhouette of the ball: thin angular bands
+  // brightest just outside the horizon, fading outward. Sampled tangentially
+  // so they read as material being whipped around. Centered on the *unlensed*
+  // ball position (uv), so the disk hugs the real silhouette.
+  {
+    float diskR = horizon + 0.02;
+    // Distance from the disk shell using the screen-space radius `uvLen`.
+    float dShell = abs(uvLen - diskR * 1.45);
+    // Long radial tail outside the ball, fast cutoff inside.
+    float diskMask = exp(-dShell * 6.0) *
+                     smoothstep(horizon * 0.95, horizon * 1.6, uvLen);
+    // Tangential streak texture: sin in azimuth, sheared by time so it spins.
+    float spinAng = atan(uv.y, uv.x) + t * (0.9 + 0.6 * u_volume);
+    // Two interleaved streak frequencies — gives the disk depth.
+    float s1 = pow(0.5 + 0.5 * sin(spinAng * 32.0 + uvLen * 14.0), 6.0);
+    float s2 = pow(0.5 + 0.5 * sin(spinAng * 18.0 - uvLen * 22.0 + t * 1.7), 4.0);
+    float streaks = s1 + 0.6 * s2;
+    // Bass thickens the disk; treble adds high-freq flicker on top.
+    float diskAmp = (0.35 + 1.4 * bassPump) * (0.6 + 0.8 * u_treble);
+    // Slight chromatic split on the disk too — relativistic doppler vibe.
+    vec3 diskTint = oilSlick(0.42 + 0.15 * sin(t * 0.5 + spinAng));
+    diskTint.r *= 1.1;
+    diskTint.b *= 1.15;
+    col += diskTint * streaks * diskMask * diskAmp;
+  }
 
   // ===== 3) Disco ball (fake sphere at center) =============================
   // Bass pulses the ball outward; idle radius keeps it always visible.
@@ -235,10 +370,26 @@ void main() {
     col = mix(col, facetCol, ballMask);
   }
 
-  // ===== 4) Halo around the ball (independent of inside/outside) ===========
+  // ===== 4) Halo around the ball — chromatically split rim ================
+  // Three slightly-offset halos in R, G, B give the rim a heavy CA fringe
+  // that intensifies as bass squeezes the lens. The shift is bigger when
+  // bass is strong, so kicks visibly tear the rim apart into color bands.
   float haloR = ballR + 0.04;
-  float halo = exp(-pow((r - haloR) * 8.0, 2.0)) * (0.18 + 0.9 * bassPump);
-  col += oilSlick(0.5 + 0.2 * sin(t * 0.6) + 0.3 * u_mid) * halo;
+  float caShift = 0.012 + 0.030 * bassPump + 0.010 * u_treble;
+  float haloAmp = 0.18 + 0.9 * bassPump;
+  float haloR_R = haloR + caShift;
+  float haloR_G = haloR;
+  float haloR_B = haloR - caShift;
+  float halR = exp(-pow((r - haloR_R) * 8.0, 2.0)) * haloAmp;
+  float halG = exp(-pow((r - haloR_G) * 8.0, 2.0)) * haloAmp;
+  float halB = exp(-pow((r - haloR_B) * 8.0, 2.0)) * haloAmp;
+  vec3 haloTint = oilSlick(0.5 + 0.2 * sin(t * 0.6) + 0.3 * u_mid);
+  col += vec3(haloTint.r * halR, haloTint.g * halG, haloTint.b * halB);
+
+  // A second, brighter rim flash exactly at the horizon — the moment of
+  // gravitational lensing where the photon ring would sit.
+  float photonRing = exp(-pow((r - ballR - 0.005) * 60.0, 2.0));
+  col += vec3(0.85, 0.92, 1.15) * photonRing * (0.25 + 1.2 * bassPump);
 
   // Outer radial bloom that breathes with bass.
   float bloom = exp(-r * 1.1) * 0.12 * (0.4 + 1.4 * bassPump);

@@ -2,8 +2,14 @@
 // ("curdles") on bass hits. Preserved when liquid-metal evolved into a cel-shaded
 // oil-on-steel; this version is the smooth, gradient-based ancestor.
 // - Domain warp driven by FBM, amplitude modulated by bass.
-// - IQ palette over warp magnitude, hue rotated by time + mids.
-// - Treble adds a fine chromatic ripple and edge sharpness.
+// - Rotating triadic palette: warp magnitude selects between three hues (120°
+//   apart) that slowly rotate around the wheel. Uses the *hard* triad picker
+//   with a thin seam (~0.07) so most of the screen lands on ONE clean neon hue
+//   instead of bleeding through desaturated RGB-interpolated midtones.
+// - Body color is held in the chroma-rich band (sat≈0.95, lit≈0.45–0.65); a
+//   separate additive emissive boost lights up the warp peaks as if they're
+//   neon tubes burning above a near-black void.
+// - Treble adds a fine chromatic ripple. Bass swells the emissive halo.
 
 void main() {
   vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution) / min(u_resolution.x, u_resolution.y);
@@ -28,29 +34,54 @@ void main() {
 
   float field = fbm(uv + curdle * r);
 
-  // Palette: chromatic, hue cycles slowly, mids brighten the highlights.
-  vec3 col = palette(
-    field + 0.2 * t + 0.4 * u_mid,
-    vec3(0.55, 0.45, 0.65),
-    vec3(0.45, 0.50, 0.40),
-    vec3(1.00, 1.00, 1.00),
-    vec3(0.00, 0.20, 0.55)
-  );
+  // ---- Triadic palette (NEON) ---------------------------------------------
+  // Hard picker with a thin (~0.07) seam: nearly every pixel resolves to ONE
+  // of three saturated triad hues, so the screen reads as deliberate neon
+  // panels of color rather than a muddy gradient.
+  float baseHue  = triadHue(0.0);
+  float selector = fract(field + 0.2 * t);
+  // Saturation pinned high — the whole point of neon. Lit kept in the
+  // chroma-rich band [0.45, 0.65] so colors don't desaturate toward white or
+  // crush toward black; brightness comes from the additive emissive pass.
+  float sat      = 0.95;
+  float lit      = 0.50 + 0.10 * sin(field * TAU + t) + 0.05 * u_mid;
+  lit            = clamp(lit, 0.45, 0.65);
+  vec3 hueRGB    = triadPickHard(selector, baseHue, sat, lit, 0.07);
 
-  // Treble: fine ripple via FFT lookup at high frequency.
+  // ---- Dark void baseline -------------------------------------------------
+  // Low-field regions fall to a near-black violet void so the neon hues pop.
+  // Avoids the previous behaviour of fading toward a desaturated triad colour.
+  vec3 voidCol  = vec3(0.015, 0.005, 0.030);
+  float bodyMix = smoothstep(0.20, 0.55, field);
+  vec3 col      = mix(voidCol, hueRGB, bodyMix);
+
+  // ---- Emissive neon highlight --------------------------------------------
+  // Additive on the hue, NOT lerp toward white. The brightest field values
+  // glow as if lit from within; bass swells the emission. Crucially, this
+  // brightens the existing hue rather than dragging it toward grey/white.
+  float emissive = smoothstep(0.62, 0.92, field);
+  col += hueRGB * emissive * (1.10 + 1.30 * u_bass);
+
+  // Soft outer halo — radial bleed of the emissive band, so peaks read as
+  // glowing tubes rather than flat patches.
+  float halo = smoothstep(0.45, 0.85, field);
+  col += hueRGB * halo * halo * 0.35;
+
+  // ---- Treble ripple ------------------------------------------------------
+  // Cool blue-violet shimmer keyed off high frequencies; tinted to play
+  // against (not wash out) the rotating triad.
   float ripple = sampleFFT(0.7 + 0.2 * length(uv)) * u_treble;
-  col += vec3(0.15, 0.10, 0.20) * ripple;
+  col += vec3(0.20, 0.30, 0.60) * ripple;
 
-  // Specular pop on bass — bright spots near the warp peaks.
-  float spec = smoothstep(0.65, 0.95, field) * (0.3 + 1.4 * u_bass);
-  col += vec3(spec);
+  // Soft vignette toward the void colour (not toward black multiply, which
+  // would just darken everything uniformly — this preserves contrast).
+  float vig = smoothstep(1.25, 0.25, length(uv));
+  col = mix(voidCol, col, vig);
 
-  // Soft vignette to keep the gaze centered.
-  float vig = smoothstep(1.2, 0.2, length(uv));
-  col *= vig;
-
-  // Tonemap-ish softening so bass spikes don't blow out.
-  col = col / (1.0 + col);
+  // Gentle tonemap — soft enough that emissive peaks still read as bright
+  // without clipping to flat white. (1.0 + 0.7*col) ramps slower than the
+  // canonical (1.0 + col) so saturated neons keep their chroma at peaks.
+  col = col / (1.0 + 0.7 * col);
 
   outColor = vec4(col, 1.0);
 }
