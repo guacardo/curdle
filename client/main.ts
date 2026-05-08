@@ -9,6 +9,7 @@ const SAMPLE_RATE = 48000;
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const pickerEl = document.getElementById("shader-picker") as HTMLSelectElement;
+const deviceEl = document.getElementById("device-picker") as HTMLSelectElement;
 const shuffleBtn = document.getElementById("shuffle-toggle") as HTMLButtonElement;
 const intervalInput = document.getElementById("shuffle-interval") as HTMLInputElement;
 const fpsBtn = document.getElementById("fps-toggle") as HTMLButtonElement;
@@ -160,6 +161,60 @@ async function populatePicker(): Promise<string[]> {
 }
 pickerEl.addEventListener("change", () => switchShader(pickerEl.value));
 
+type DeviceInfo = { id: string; label: string };
+type DevicesResponse = { current: string | null; devices: DeviceInfo[] };
+
+async function selectDevice(id: string) {
+  setStatus("connecting", "switching audio source…");
+  const res = await fetch("/devices/select", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("[curdle] device switch failed:", text);
+    setStatus("error", "device switch failed");
+    return;
+  }
+  localStorage.setItem("curdle.audioDevice", id);
+  setStatus("connected", "connected");
+}
+
+async function populateDevicePicker() {
+  let data: DevicesResponse;
+  try {
+    data = await (await fetch("/devices")).json();
+  } catch (err) {
+    console.error("[curdle] /devices fetch failed:", err);
+    deviceEl.disabled = true;
+    return;
+  }
+  deviceEl.innerHTML = "";
+  if (data.devices.length === 0) {
+    const opt = document.createElement("option");
+    opt.textContent = "(no devices)";
+    deviceEl.appendChild(opt);
+    deviceEl.disabled = true;
+    return;
+  }
+  for (const d of data.devices) {
+    const opt = document.createElement("option");
+    opt.value = d.id;
+    opt.textContent = d.label;
+    deviceEl.appendChild(opt);
+  }
+  const saved = localStorage.getItem("curdle.audioDevice");
+  const savedExists = saved && data.devices.some((d) => d.id === saved);
+  const initial = savedExists ? saved! : (data.current ?? data.devices[0].id);
+  deviceEl.value = initial;
+  if (savedExists && saved !== data.current) {
+    await selectDevice(saved!);
+  }
+}
+
+deviceEl.addEventListener("change", () => selectDevice(deviceEl.value));
+
 let shuffleOn = localStorage.getItem("curdle.shuffle.enabled") === "true";
 let shuffleIntervalSec = clampInterval(Number(localStorage.getItem("curdle.shuffle.intervalSec")) || 15);
 let shuffleQueue: string[] = [];
@@ -266,6 +321,8 @@ async function boot() {
       workletNode.port.postMessage(e.data, [e.data]);
     }
   };
+
+  await populateDevicePicker();
 
   const names = await populatePicker();
   if (names.length === 0) {

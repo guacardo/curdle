@@ -1,5 +1,5 @@
-import { subscribe, start } from "./audio";
-import { SAMPLE_RATE, CHANNELS } from "./platform";
+import { subscribe, start, restart, getCurrentDeviceId } from "./audio";
+import { SAMPLE_RATE, CHANNELS, listOutputDevices } from "./platform";
 
 const PORT = Number(process.env.PORT ?? 8788);
 const ROOT = new URL("../", import.meta.url).pathname;
@@ -11,7 +11,7 @@ type WSData = { unsub?: () => void };
 const server = Bun.serve<WSData, undefined>({
   port: PORT,
 
-  fetch(req, srv) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
 
     if (url.pathname === "/audio") {
@@ -22,6 +22,31 @@ const server = Bun.serve<WSData, undefined>({
 
     if (url.pathname === "/config") {
       return Response.json({ sampleRate: SAMPLE_RATE, channels: CHANNELS });
+    }
+
+    if (url.pathname === "/devices" && req.method === "GET") {
+      return Response.json({
+        current: getCurrentDeviceId(),
+        devices: await listOutputDevices(),
+      });
+    }
+
+    if (url.pathname === "/devices/select" && req.method === "POST") {
+      let id: string | null = null;
+      try {
+        const body = await req.json() as { id?: string };
+        id = body.id?.trim() || null;
+      } catch {
+        return new Response("invalid JSON body", { status: 400 });
+      }
+      if (!id) return new Response("missing id", { status: 400 });
+      try {
+        await restart(id);
+      } catch (err) {
+        console.error("[audio] restart failed:", err);
+        return new Response(String(err), { status: 500 });
+      }
+      return Response.json({ ok: true, current: getCurrentDeviceId() });
     }
 
     if (url.pathname === "/shaders.json") {

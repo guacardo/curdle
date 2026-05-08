@@ -53,7 +53,8 @@ body:hover #ui { opacity: 1; }
 #status[data-state="connected"]  { color: #6c6; }
 #status[data-state="error"]      { color: #c66; }
 
-#shader-picker {
+#shader-picker,
+#device-picker {
   padding: 6px 10px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -61,6 +62,7 @@ body:hover #ui { opacity: 1; }
   color: var(--fg);
   font: inherit;
   font-size: 12px;
+  max-width: 240px;
 }
 
 #shuffle-toggle,

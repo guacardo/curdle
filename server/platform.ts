@@ -12,12 +12,37 @@ const OUTPUT_ARGS = [
   "pipe:1",
 ];
 
-export async function getCaptureArgs(): Promise<string[]> {
+export type AudioDevice = { id: string; label: string };
+
+export async function listOutputDevices(): Promise<AudioDevice[]> {
+  if (process.platform !== "linux") return [];
+  const text = await $`pactl list sinks`.text();
+  // Each sink begins with "Sink #N" then indented key:value lines.
+  const blocks = text.split(/^Sink #\d+/m).slice(1);
+  const out: AudioDevice[] = [];
+  for (const block of blocks) {
+    const name = block.match(/^\s*Name:\s*(\S+)/m)?.[1];
+    const desc = block.match(/^\s*Description:\s*(.+)$/m)?.[1]?.trim();
+    if (name) out.push({ id: name, label: desc ?? name });
+  }
+  return out;
+}
+
+export async function resolveDeviceId(deviceId?: string | null): Promise<string | null> {
+  if (deviceId) return deviceId;
+  if (process.platform === "linux") {
+    const sink = (await $`pactl get-default-sink`.text()).trim();
+    return sink || null;
+  }
+  return null;
+}
+
+export async function getCaptureArgs(deviceId?: string | null): Promise<string[]> {
   const base = ["-hide_banner", "-loglevel", "error"];
 
   switch (process.platform) {
     case "linux": {
-      const sink = (await $`pactl get-default-sink`.text()).trim();
+      const sink = deviceId;
       if (!sink) {
         throw new Error(
           "Could not detect default audio sink via pactl. Is PipeWire/PulseAudio running?"
