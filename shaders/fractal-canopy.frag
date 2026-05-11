@@ -140,10 +140,11 @@ void main() {
     if (side == 0.0) side = 1.0;
     p.x = abs(p.x);
 
-    // Rotate INTO the right-child's local frame: the child grows along a
-    // direction `angle` clockwise from +Y in the parent frame, so we rotate
-    // the *point* by `+angle` (inverse of -angle) to bring its spine to +Y.
-    p = rot2d(angle) * p;
+    // Rotate INTO the right-child's local frame. The right child's spine
+    // direction in the parent frame is (sin angle, cos angle) — i.e. `angle`
+    // clockwise from +Y. rot2d() here is CW (see common.glsl), so to bring
+    // that spine direction back to (0, 1) we apply rot2d(-angle).
+    p = rot2d(-angle) * p;
 
     // SDF to this generation's branch segment.
     float dG = segmentSDF(p, len, thick);

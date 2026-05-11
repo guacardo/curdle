@@ -65,25 +65,50 @@ void main() {
   vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution) / min(u_resolution.x, u_resolution.y);
 
   // ---- Growth animation (live curve length) ------------------------------
-  // Curve grows from 0 → MAX_SEGMENTS over GROW_PERIOD seconds, then loops.
+  // Curve grows monotonically from 0 → MAX_SEGMENTS over GROW_PERIOD seconds
+  // and then plateaus at full length forever. The whole point is to watch
+  // the self-similar Heighway structure emerge as the segment count crosses
+  // each power of two (4 → 8 → 16 → 32 → 64 → 128 → 256), so we never reset.
   // Bass briefly accelerates the leading edge — the curve "lurches" forward
-  // on kicks.
-  float GROW_PERIOD = 14.0;
-  float baseT = mod(u_time, GROW_PERIOD) / GROW_PERIOD;
+  // on kicks during the growth phase, then has no effect once full.
+  float GROW_PERIOD = 140.0;
+  float baseT = clamp(u_time / GROW_PERIOD, 0.0, 1.0);
   float eased = smoothstep(0.0, 1.0, baseT);
   float bassPush = 0.06 * pow(u_bass, 1.4);
   float liveLen = clamp(eased + bassPush, 0.0, 1.0) * float(MAX_SEGMENTS);
 
-  // ---- World scale: zoom out as the curve grows so it fits ---------------
-  // After N segments the curve roughly spans sqrt(N) units. Pick worldScale
-  // so the live curve always occupies ~70% of the viewport.
-  float spanGuess = sqrt(max(liveLen, 16.0));
-  float worldScale = 1.4 / spanGuess;
-
-  // Empirical centroid offset of the first ~256 dragon segments. Found by
-  // averaging endpoints — close enough that the figure reads as roughly
-  // centered for the entire growth cycle.
-  vec2 centroidShift = vec2(6.0, 4.5);
+  // ---- Pass 1: bbox of currently-revealed segments -----------------------
+  // The dragon's centroid changes a lot as it grows, so a constant offset
+  // misses the figure during early/mid growth. Walk the curve once just to
+  // find the live bbox; pass 2 (below) uses it for camera framing.
+  vec2 lo = vec2( 1e9);
+  vec2 hi = vec2(-1e9);
+  {
+    vec2 pPos = vec2(0.0);
+    vec2 pDir = vec2(1.0, 0.0);
+    lo = min(lo, pPos);
+    hi = max(hi, pPos);
+    for (int i = 1; i <= MAX_SEGMENTS; i++) {
+      vec2 a = pPos;
+      vec2 b = pPos + pDir;
+      float rev = clamp(liveLen - float(i - 1), 0.0, 1.0);
+      if (rev > 0.0) {
+        vec2 bDraw = mix(a, b, rev);
+        lo = min(lo, bDraw);
+        hi = max(hi, bDraw);
+      }
+      pPos = b;
+      float t = dragonTurn(i);
+      pDir = vec2(-t * pDir.y, t * pDir.x);
+    }
+  }
+  vec2 bboxSize = max(hi - lo, vec2(4.0));
+  float aspect = u_resolution.x / u_resolution.y;
+  // Fit the bbox into ~85% of the smaller viewport axis.
+  float worldScale = 0.85 / max(bboxSize.y, bboxSize.x / aspect);
+  // Camera target = bbox center (snap so per-frame jitter from `rev` clamping
+  // doesn't show as wobble).
+  vec2 centroidShift = 0.5 * (lo + hi);
 
   // ---- Triadic palette base (shared rotating hue) ------------------------
   float baseHue = triadHue(0.10);
